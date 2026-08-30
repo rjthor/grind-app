@@ -1118,8 +1118,8 @@ html, body {
           <div class="settings-val">
             <select class="sens-select" id="sens-select">
               <option value="low">Low</option>
-              <option value="medium" selected>Medium</option>
-              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="high" selected>High</option>
             </select>
           </div>
         </div>
@@ -1128,6 +1128,9 @@ html, body {
     <div class="settings-section">
       <div class="settings-title">Data</div>
       <button class="danger-btn" id="reset-data-btn">Reset All Data</button>
+    </div>
+    <div class="settings-section">
+      <div class="settings-row-sub" id="build-stamp" style="text-align:center;">Build: —</div>
     </div>
   </div>
 
@@ -1160,6 +1163,10 @@ html, body {
 <script>
 'use strict';
 
+// Bumped by publish.sh on every push — lets you confirm on your phone that a
+// deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
+const BUILD_ID = '2026-08-30_17:23';
+
 /* ═══════════════════════════════════════════
    DATA LAYER
 ═══════════════════════════════════════════ */
@@ -1182,7 +1189,7 @@ function loadData() {
     goals: Object.fromEntries(EXERCISES.map(e => [e.id, e.defaultGoal])),
     workouts: {},   // { "2026-08-28": { pushups: 45, squats: 0, ... } }
     streak: { current: 0, best: 0, lastDate: null },
-    settings: { sensitivity: 'medium' }
+    settings: { sensitivity: 'high' }
   };
 }
 
@@ -1243,14 +1250,18 @@ class MotionDetector {
     this.reps       = 0;
     this.onRep      = null;
     this.onStateChange = null;
-    this.sensitivity = 'medium';
+    this.sensitivity = 'high';
   }
 
   get cfg() {
     return {
       low:    { diffTh:45, minMotion:40, downY:0.62, upY:0.38, minFrames:16, alpha:0.9 },
       medium: { diffTh:28, minMotion:25, downY:0.57, upY:0.43, minFrames:12, alpha:0.87 },
-      high:   { diffTh:15, minMotion:14, downY:0.54, upY:0.46, minFrames:9,  alpha:0.84 },
+      // Loosened 2026-08-30: reported that even 'high' under-counted reps —
+      // lower diffTh/minMotion register subtler motion (useful late in a set when
+      // reps get slower/shallower from fatigue), fewer minFrames means less
+      // sustained motion needed before a state flip registers.
+      high:   { diffTh:12, minMotion:10, downY:0.53, upY:0.47, minFrames:6,  alpha:0.82 },
     }[this.sensitivity] || this.cfg_medium;
   }
 
@@ -1874,7 +1885,7 @@ function renderSettings() {
     });
   });
 
-  document.getElementById('sens-select').value = DATA.settings.sensitivity || 'medium';
+  document.getElementById('sens-select').value = DATA.settings.sensitivity || 'high';
 }
 
 /* ═══════════════════════════════════════════
@@ -1981,4 +1992,5 @@ function maybeSeedDemo() {
 
 maybeSeedDemo();
 renderDashboard();
+document.getElementById('build-stamp').textContent = `Build: ${BUILD_ID}`;
 </script>
