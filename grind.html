@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_22:16';
+const BUILD_ID = '2026-08-31_22:23';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1281,11 +1281,22 @@ class MotionDetector {
       // band 0.54/0.46->0.53/0.47, minFrames 9->6) on the theory that it was
       // too strict. Reverted 2026-08-31: made real-world detection WORSE, not
       // better, on an actual phone/camera — an untested guess turned out
-      // wrong. Back to the original numbers below. Don't re-loosen this blind
-      // again — use the wo-debug readout (visible during a workout: shows live
-      // motionPx vs. minMotion and smoothedY vs. downY/upY) to see what's
-      // actually happening on-device before changing any of these numbers.
-      high:   { diffTh:15, minMotion:14, downY:0.54, upY:0.46, minFrames:9,  alpha:0.84 },
+      // wrong. Back to the original numbers.
+      //
+      // alpha 0.84->0.65, 2026-08-31 (evening): DIFFERENT change, backed by
+      // actual on-device range data this time, not a guess — a squats test
+      // showed smoothedY comfortably clearing both downY/upY over the full
+      // set (range 0.29-0.64), yet most individual reps still weren't being
+      // counted. That specific pattern (range is fine, count isn't) points at
+      // smoothedY's EMA being too slow to track a real squat's tempo, not at
+      // the position band or motion thresholds — alpha 0.84 has a ~1-2s
+      // settling time, which can outlast the "at the bottom" dwell of a
+      // brisk squat, so the average never catches up before the rep reverses.
+      // Lowering alpha makes it track faster (~0.5-0.6s settling) at some
+      // cost of more jitter-sensitivity. Left diffTh/minMotion/downY/upY/
+      // minFrames untouched on purpose — isolate this one variable so the
+      // next debug readout can tell us definitively whether this was right.
+      high:   { diffTh:15, minMotion:14, downY:0.54, upY:0.46, minFrames:9,  alpha:0.65 },
     }[this.sensitivity] || this.cfg_medium;
   }
 
