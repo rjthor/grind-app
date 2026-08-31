@@ -82,6 +82,9 @@ Fixed:
 
 **If it's still unreliable after repositioning at proper distance with good lighting**: use the `wo-debug` readout again with a *correctly-framed* setup — if `smoothedY` still isn't swinging across `downY`/`upY` with good framing/light, that's real evidence for a genuine threshold fix (not another guess). If it's still not reliable even then, that's the actual signal to invest in real pose estimation instead of continuing to tune this heuristic.
 
+## Fixed 2026-08-31 — camera "doesn't switch on" for a second/third workout in the same session
+`startWorkout()` re-attaches a fresh `getUserMedia` stream to the *same* `<video id="workout-camera">` element every time (not a new element) and did `await new Promise(r => vid.onloadedmetadata = r)` with no timeout. Reusing the same video element across multiple stream attachments is a known flaky spot (seen on iOS Safari) where `loadedmetadata` doesn't reliably re-fire on a later attach — when that happened, `startWorkout()` just hung at that line forever, since nothing else was gating progress. Countdown and workout screen never proceeded — looked exactly like "camera doesn't switch on." Fixed with `Promise.race([onloadedmetadata, 2.5s timeout])` so it always proceeds either way; harmless in the normal case since the real event still wins the race immediately when it fires.
+
 ## File layout
 - `grind.html` — the entire app (HTML/CSS/JS inline).
 - `index.html` — root-URL redirect to `grind.html` (added 2026-08-30, see Deployment above).
