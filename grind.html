@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_21:55';
+const BUILD_ID = '2026-08-31_22:09';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1643,7 +1643,15 @@ async function startWorkout(useCam) {
       });
       const vid = document.getElementById('workout-camera');
       vid.srcObject = workout.stream;
-      await new Promise(r => vid.onloadedmetadata = r);
+      // Timeout-guarded (added 2026-08-31): reattaching a stream to the same
+      // <video> element for a second/third workout can fail to re-fire
+      // 'loadedmetadata' (seen on iOS Safari) — without a fallback, this hung
+      // forever, which is what "camera doesn't switch on for another set"
+      // actually was. 2.5s is generous; real loads resolve near-instantly.
+      await Promise.race([
+        new Promise(r => vid.onloadedmetadata = r),
+        new Promise(r => setTimeout(r, 2500)),
+      ]);
 
       // Processing canvas (hidden, small for perf)
       if (!workout.procCanvas) {
