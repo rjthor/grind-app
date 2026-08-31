@@ -1044,6 +1044,10 @@ html, body {
           ● READY
         </div>
       </div>
+      <!-- Too-dark warning (added 2026-08-31) — camera is capturing sensor
+           noise, not real motion, so counting silently fails with no other
+           indication anything's wrong. See CLAUDE.md "Debug readout". -->
+      <div id="wo-dark-warning" style="display:none;text-align:center;font-size:13px;font-weight:600;color:var(--danger);background:rgba(244,63,94,0.12);border-radius:8px;padding:6px 12px;margin:6px 16px 0;">⚠️ Too dark to see — reposition or add light</div>
       <!-- Temporary debug readout (added 2026-08-31 to diagnose detection tuning — remove once dialed in) -->
       <div id="wo-debug" style="text-align:center;font-size:11px;color:rgba(255,255,255,0.6);font-family:monospace;margin-top:4px;">—</div>
       <div class="wo-center">
@@ -1175,14 +1179,14 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_21:04';
+const BUILD_ID = '2026-08-31_21:55';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
 ═══════════════════════════════════════════ */
 const EXERCISES = [
-  { id:'pushups',       name:'Push-Ups',      icon:'💪', color:'orange', unit:'reps',  defaultGoal:100, tip:'Place phone on floor angled up or sideways to show your side profile. Auto-counting works best from the side.' },
-  { id:'squats',        name:'Squats',         icon:'🦵', color:'teal',   unit:'reps',  defaultGoal:50,  tip:'Place phone facing you from the side at hip height. Your vertical motion is what gets detected.' },
+  { id:'pushups',       name:'Push-Ups',      icon:'💪', color:'orange', unit:'reps',  defaultGoal:100, tip:'Prop the phone 1-1.5m away at floor level, angled up, so your WHOLE body is in frame from the side — not close-up. Too close and it can only see your face, which breaks auto-counting.' },
+  { id:'squats',        name:'Squats',         icon:'🦵', color:'teal',   unit:'reps',  defaultGoal:50,  tip:'Prop the phone 1-1.5m away at hip height, facing you from the side, so your WHOLE body is in frame. Make sure it isn’t blocked or facing somewhere dark.' },
   { id:'situps',        name:'Sit-Ups',        icon:'🔥', color:'gold',   unit:'reps',  defaultGoal:50,  tip:'Place phone beside your mat facing you from the side. Your torso rising and lowering counts the reps.' },
   { id:'jumpingjacks',  name:'Jumping Jacks',  icon:'⚡', color:'blue',   unit:'reps',  defaultGoal:100, tip:'Stand 1–2m from phone facing it. Arm & body motion is detected easily from the front.' },
   { id:'plank',         name:'Plank',          icon:'🧱', color:'orange', unit:'sec',   defaultGoal:120, tip:'This is a timed hold — no counting needed. Press start and hold your plank!' },
@@ -1288,7 +1292,7 @@ class MotionDetector {
       return { motionLevel: 0, state: this.state, reps: this.reps };
     }
 
-    let motionPx = 0, weightedY = 0;
+    let motionPx = 0, weightedY = 0, brightnessSum = 0, sampleCount = 0;
     // Sample every other row and column for perf
     for (let y = 0; y < height; y += 2) {
       for (let x = 0; x < width; x += 2) {
@@ -1300,8 +1304,17 @@ class MotionDetector {
           motionPx++;
           weightedY += y;
         }
+        // Added 2026-08-31: brightness sample, reusing this same pass — lets
+        // us tell "camera sees nothing real, just sensor noise in near-dark"
+        // apart from "camera sees real motion but thresholds are wrong",
+        // which the raw motionPx count alone can't distinguish (near-black
+        // footage still produces plenty of frame-to-frame pixel diff noise).
+        brightnessSum += (data[i] + data[i+1] + data[i+2]) / 3;
+        sampleCount++;
       }
     }
+    const avgBrightness = sampleCount ? brightnessSum / sampleCount : 0;
+    const tooDark = avgBrightness < 25; // 0-255 scale; empirically near-black footage
 
     this.prevData = new Uint8ClampedArray(data);
 
@@ -1335,6 +1348,7 @@ class MotionDetector {
       // the camera is registering ANY qualifying motion at all; smoothedY vs.
       // downY/upY shows whether it's just not reaching the position thresholds.
       motionPx, minMotion: c.minMotion, smoothedY: this.smoothedY, downY: c.downY, upY: c.upY,
+      tooDark,
     };
   }
 
@@ -1719,6 +1733,7 @@ function beginWorkout() {
           document.getElementById('wo-debug').textContent =
             `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)} (down>${res.downY} up<${res.upY})`;
         }
+        document.getElementById('wo-dark-warning').style.display = res.tooDark ? 'block' : 'none';
       } catch(e) {}
     }
     workout.animFrame = requestAnimationFrame(detect);
