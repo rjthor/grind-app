@@ -925,6 +925,7 @@ html, body {
       <h2 id="dash-greeting">MORNING, RAMBO</h2>
       <div class="streak-badge" id="streak-badge">🔥 <span id="streak-num">0</span> DAY</div>
     </div>
+    <div id="build-stamp-dash" style="font-size:10px;color:var(--text3);margin-top:-8px;margin-bottom:12px;">Build: —</div>
 
     <div class="today-section">
       <div class="section-label">Today's Goal</div>
@@ -1165,7 +1166,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-30_17:38';
+const BUILD_ID = '2026-08-31_07:03';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1997,4 +1998,5 @@ function maybeSeedDemo() {
 maybeSeedDemo();
 renderDashboard();
 document.getElementById('build-stamp').textContent = `Build: ${BUILD_ID}`;
+document.getElementById('build-stamp-dash').textContent = `Build: ${BUILD_ID}`;
 </script>
