@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_22:09';
+const BUILD_ID = '2026-08-31_22:16';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1265,6 +1265,12 @@ class MotionDetector {
     this.onRep      = null;
     this.onStateChange = null;
     this.sensitivity = 'high';
+    // Debug range tracking (added 2026-08-31) — a single debug-readout
+    // screenshot only shows smoothedY at that instant, not the true range of
+    // motion actually reached during the set. Tracking min/max lets one test
+    // run answer "does this ever actually clear the thresholds" definitively.
+    this.minY = 1;
+    this.maxY = 0;
   }
 
   get cfg() {
@@ -1324,6 +1330,8 @@ class MotionDetector {
     if (motionPx > c.minMotion) {
       const rawY = (weightedY / motionPx) / height;
       this.smoothedY = c.alpha * this.smoothedY + (1 - c.alpha) * rawY;
+      this.minY = Math.min(this.minY, this.smoothedY);
+      this.maxY = Math.max(this.maxY, this.smoothedY);
       this.framesHeld++;
 
       const prevState = this.state;
@@ -1348,12 +1356,12 @@ class MotionDetector {
       // the camera is registering ANY qualifying motion at all; smoothedY vs.
       // downY/upY shows whether it's just not reaching the position thresholds.
       motionPx, minMotion: c.minMotion, smoothedY: this.smoothedY, downY: c.downY, upY: c.upY,
-      tooDark,
+      tooDark, minY: this.minY, maxY: this.maxY,
     };
   }
 
   reset() {
-    this.prevData = null; this.smoothedY = 0.5;
+    this.prevData = null; this.smoothedY = 0.5; this.minY = 1; this.maxY = 0;
     this.state = 'up'; this.framesHeld = 0; this.reps = 0;
   }
 }
@@ -1735,11 +1743,13 @@ function beginWorkout() {
         }
 
         // Temporary debug readout (2026-08-31) — px:moving-pixel-count vs the
-        // minimum needed to register motion at all; Y:smoothed vertical
-        // motion-center vs the down/up thresholds it has to cross for a rep.
+        // minimum needed to register motion at all; Y:current smoothed value;
+        // range:min-max reached so far THIS SET — the actual number that
+        // matters (a single Y: snapshot can't tell you if it's near your true
+        // top/bottom or mid-transition, but the full-set range can).
         if (res.motionPx !== undefined) {
           document.getElementById('wo-debug').textContent =
-            `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)} (down>${res.downY} up<${res.upY})`;
+            `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)}  range:${res.minY.toFixed(2)}-${res.maxY.toFixed(2)} (down>${res.downY} up<${res.upY})`;
         }
         document.getElementById('wo-dark-warning').style.display = res.tooDark ? 'block' : 'none';
       } catch(e) {}
