@@ -708,11 +708,18 @@ html, body {
 /* ── COMPLETE SCREEN ────────────────────── */
 #complete-screen {
   padding: 40px 20px 80px;
-  display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
 }
+/* Root cause of the stuck-screen bug (2026-08-31): this ID selector's
+   specificity beats .screen{display:none}/.screen.active{display:block}
+   outright, so an unqualified `display: flex` above made this div visible
+   PERMANENTLY regardless of the .active class the instant anything cleared
+   its hardcoded inline style="display:none" — which any navigation now does.
+   Scoping display:flex to only apply alongside .active keeps this screen's
+   ID rule from ever outranking the normal show/hide mechanism. */
+#complete-screen.active { display: flex; }
 .complete-emoji { font-size: 72px; margin-bottom: 16px; }
 .complete-title {
   font-family: var(--bebas);
@@ -1064,7 +1071,7 @@ html, body {
   </div>
 
   <!-- COMPLETE -->
-  <div id="complete-screen" class="screen" style="display:none">
+  <div id="complete-screen" class="screen">
     <div class="complete-emoji" id="complete-emoji">💪</div>
     <div class="complete-title" id="complete-title">DONE!</div>
     <div class="complete-sub" id="complete-sub">Keep going. Every rep counts.</div>
@@ -1166,7 +1173,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_07:03';
+const BUILD_ID = '2026-08-31_07:20';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1406,20 +1413,16 @@ function showScreen(id) {
   const isFullScreen = ['workout'].includes(id);
   const isFull = (s) => s.classList.contains('screen-full');
 
-  // Clear every screen's inline display first — 'complete' below sets one
-  // directly (needs flex, not the .screen.active default of block), and it
-  // must not survive navigating away or it keeps rendering on top, invisibly
-  // blocking clicks on whatever screen comes next until a manual refresh.
+  // Pure class toggling — visibility is fully governed by .screen/.screen.active
+  // (+ #complete-screen.active for its flex layout) in CSS. No inline display
+  // styles here: that was the actual bug (see #complete-screen.active comment
+  // in CSS, 2026-08-31) — don't reintroduce JS-driven inline display styles.
   Object.entries(screens).forEach(([k, el]) => {
     el.classList.remove('active');
-    el.style.removeProperty('display');
   });
 
   const target = screens[id];
-  if (target) {
-    target.classList.add('active');
-    if (id === 'complete') target.style.display = 'flex';
-  }
+  if (target) target.classList.add('active');
 
   // Nav visibility
   const hideNav = ['workout'].includes(id);
