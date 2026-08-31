@@ -1031,7 +1031,7 @@ html, body {
     <!-- Countdown overlay -->
     <div id="countdown-overlay">
       <div id="countdown-num">3</div>
-      <div class="countdown-label">Get in position</div>
+      <div class="countdown-label" id="countdown-label">Get in position</div>
     </div>
     <!-- Workout UI -->
     <div class="workout-ui" id="workout-ui">
@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_22:29';
+const BUILD_ID = '2026-08-31_22:43';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1386,6 +1386,146 @@ class MotionDetector {
 }
 
 /* ═══════════════════════════════════════════
+   POSE DETECTOR (added 2026-08-31) — real body-landmark tracking via MediaPipe
+   Pose, replacing pixel-motion guessing for push-ups/squats specifically.
+   Counts reps off an actual joint angle (elbow for push-ups, knee for
+   squats) instead of "where in frame did pixels change" — should be far
+   less sensitive to camera distance/angle/tempo than MotionDetector was.
+
+   UNTESTED ON A REAL DEVICE as of this commit (no camera access in this
+   environment) — angle thresholds below are a first, reasoned guess (typical
+   elbow/knee extension angles for a full-range rep), not measured. Use the
+   pose debug readout the same way the motion one was used: check the live
+   angle/visibility numbers on-device before assuming these thresholds are
+   wrong and changing them blind.
+
+   Falls back to MotionDetector automatically if the model fails to load
+   (network issue, unsupported browser, etc.) — see the POSE_LANDMARKS[...]
+   check + bounded loadPoseModel() wait in startWorkout(), and workout.usePose
+   branching in beginWorkout()'s detect() loop. Never leaves the workout
+   screen stuck on a loading state with no way to proceed (6s bounded wait).
+═══════════════════════════════════════════ */
+const POSE_LANDMARKS = {
+  // [shoulder, elbow, wrist] / [hip, knee, ankle] pairs, left and right side.
+  // MediaPipe Pose's standard 33-point index layout.
+  pushups: { L: [11, 13, 15], R: [12, 14, 16], downAngle: 110, upAngle: 150 },
+  squats:  { L: [23, 25, 27], R: [24, 26, 28], downAngle: 120, upAngle: 160 },
+};
+const POSE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
+const POSE_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+
+let _poseLandmarker = null;   // shared across the session once loaded — loading it fresh per workout would be slow
+let _poseLoadPromise = null;
+let _poseLoadFailed = false;
+
+function loadPoseModel() {
+  if (_poseLandmarker || _poseLoadFailed) return _poseLoadPromise || Promise.resolve(_poseLandmarker);
+  if (_poseLoadPromise) return _poseLoadPromise;
+  _poseLoadPromise = (async () => {
+    try {
+      const { PoseLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+      const vision = await FilesetResolver.forVisionTasks(POSE_WASM_URL);
+      _poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate: 'CPU' }, // CPU delegate: GPU/WebGL delegate support in iOS Safari WASM is inconsistent — CPU is slower but far more reliably available
+        runningMode: 'VIDEO',
+        numPoses: 1,
+      });
+      return _poseLandmarker;
+    } catch (e) {
+      console.warn('Pose model failed to load, will fall back to motion detection:', e);
+      _poseLoadFailed = true;
+      return null;
+    }
+  })();
+  return _poseLoadPromise;
+}
+// Kick off loading as early as possible (page load) so it's hopefully ready
+// by the time the user actually starts a workout, rather than waiting on it
+// then. Fire-and-forget — startWorkout() awaits loadPoseModel() again later,
+// which just returns the already-resolved (or in-flight) promise.
+loadPoseModel();
+
+function _angleDeg(a, b, c) {
+  // Angle at vertex b, formed by rays b->a and b->c, in degrees.
+  const abx = a.x - b.x, aby = a.y - b.y;
+  const cbx = c.x - b.x, cby = c.y - b.y;
+  const magA = Math.hypot(abx, aby), magC = Math.hypot(cbx, cby);
+  if (magA === 0 || magC === 0) return null;
+  const cos = Math.max(-1, Math.min(1, (abx * cbx + aby * cby) / (magA * magC)));
+  return Math.acos(cos) * 180 / Math.PI;
+}
+
+class PoseDetector {
+  constructor() {
+    this.exId = 'pushups';
+    this.state = 'up';
+    this.framesHeld = 0;
+    this.minFrames = 5; // landmark tracking is much less noisy than raw pixel motion, so needs less debounce than MotionDetector's minFrames
+    this.reps = 0;
+    this.onRep = null;
+    this.minAngle = 180;
+    this.maxAngle = 0;
+    this.lastVisible = false;
+  }
+
+  process(video, timestampMs) {
+    if (!_poseLandmarker) return { angle: null, visible: false, state: this.state, reps: this.reps };
+    const cfg = POSE_LANDMARKS[this.exId];
+    let result;
+    try {
+      result = _poseLandmarker.detectForVideo(video, timestampMs);
+    } catch (e) {
+      return { angle: null, visible: false, state: this.state, reps: this.reps };
+    }
+    const lm = result && result.landmarks && result.landmarks[0];
+    if (!lm) {
+      this.lastVisible = false;
+      return { angle: null, visible: false, state: this.state, reps: this.reps };
+    }
+
+    // Use whichever side (L/R) has better-visible landmarks — side-profile
+    // framing means only one side of the body is normally in clear view.
+    const visScore = (side) => side.reduce((s, i) => s + (lm[i].visibility || 0), 0);
+    const side = visScore(cfg.L) >= visScore(cfg.R) ? cfg.L : cfg.R;
+    const minVis = Math.min(...side.map(i => lm[i].visibility || 0));
+    const visible = minVis > 0.5;
+    this.lastVisible = visible;
+
+    if (!visible) return { angle: null, visible: false, state: this.state, reps: this.reps };
+
+    const [a, b, c] = side.map(i => lm[i]);
+    const angle = _angleDeg(a, b, c);
+    if (angle === null) return { angle: null, visible: false, state: this.state, reps: this.reps };
+
+    this.minAngle = Math.min(this.minAngle, angle);
+    this.maxAngle = Math.max(this.maxAngle, angle);
+    this.framesHeld++;
+
+    if (angle < cfg.downAngle && this.state !== 'down' && this.framesHeld >= this.minFrames) {
+      this.state = 'down'; this.framesHeld = 0;
+    } else if (angle > cfg.upAngle && this.framesHeld >= this.minFrames) {
+      if (this.state === 'down') {
+        this.reps++;
+        if (this.onRep) this.onRep(this.reps);
+      }
+      this.state = 'up'; this.framesHeld = 0;
+    }
+
+    return {
+      angle, visible: true, state: this.state, reps: this.reps,
+      downAngle: cfg.downAngle, upAngle: cfg.upAngle,
+      minAngle: this.minAngle, maxAngle: this.maxAngle,
+      framesHeld: this.framesHeld, minFrames: this.minFrames,
+    };
+  }
+
+  reset() {
+    this.state = 'up'; this.framesHeld = 0; this.reps = 0;
+    this.minAngle = 180; this.maxAngle = 0; this.lastVisible = false;
+  }
+}
+
+/* ═══════════════════════════════════════════
    AUDIO (rep beep)
 ═══════════════════════════════════════════ */
 let _audioCtx = null;
@@ -1444,6 +1584,8 @@ const workout = {
   timerInterval: null,
   useCam: false,
   detector: new MotionDetector(),
+  poseDetector: new PoseDetector(),
+  usePose: false, // decided once per workout start — see startWorkout()
   procCanvas: null,
   procCtx: null,
   goalHit: false,
@@ -1634,6 +1776,8 @@ async function startWorkout(useCam) {
   workout.stream = null;
   workout.detector.reset();
   workout.detector.sensitivity = DATA.settings.sensitivity;
+  workout.poseDetector.reset();
+  workout.usePose = false;
 
   const ex = EXERCISES.find(e => e.id === workout.exId);
   workout.isPlank = ex && ex.unit === 'sec';
@@ -1688,6 +1832,26 @@ async function startWorkout(useCam) {
       workout.procCanvas.width  = 160;
       workout.procCanvas.height = 213;
 
+      // Pose tracking (added 2026-08-31): push-ups/squats use real joint-angle
+      // detection instead of motion-guessing, IF the model is available. It
+      // starts loading at page load (loadPoseModel() call near PoseDetector's
+      // definition), so it's usually already ready by now — this wait is a
+      // bounded fallback for a slow first-load, not the normal path. Falls
+      // through to workout.usePose staying false (MotionDetector handles it,
+      // same as before) if the model isn't ready in time or failed outright.
+      if (POSE_LANDMARKS[workout.exId]) {
+        if (!_poseLandmarker && !_poseLoadFailed) {
+          document.getElementById('countdown-label').textContent = 'Loading AI detection…';
+          document.getElementById('countdown-overlay').style.display = 'flex';
+          await Promise.race([loadPoseModel(), new Promise(r => setTimeout(r, 6000))]);
+          document.getElementById('countdown-overlay').style.display = 'none';
+        }
+        if (_poseLandmarker) {
+          workout.usePose = true;
+          workout.poseDetector.exId = workout.exId;
+        }
+      }
+
     } catch(e) {
       console.warn('Camera denied:', e);
       workout.useCam = false;
@@ -1708,6 +1872,7 @@ function runCountdown() {
   return new Promise(resolve => {
     const overlay = document.getElementById('countdown-overlay');
     const numEl   = document.getElementById('countdown-num');
+    document.getElementById('countdown-label').textContent = 'Get in position'; // in case startWorkout() overwrote it with a pose-model loading message
     overlay.style.display = 'flex';
     let n = 3;
     numEl.textContent = n;
@@ -1744,13 +1909,20 @@ function beginWorkout() {
     // Process every 2nd frame (~15fps)
     if (frameCount % 2 === 0 && vid.readyState >= 2) {
       try {
-        const pc = workout.procCanvas, ctx = workout.procCtx;
-        ctx.drawImage(vid, 0, 0, pc.width, pc.height);
-        const id = ctx.getImageData(0, 0, pc.width, pc.height);
-        const res = workout.detector.process(id);
-
-        // Update motion bar
-        document.getElementById('motion-bar').style.height = res.motionLevel + '%';
+        let res;
+        if (workout.usePose) {
+          // Pose tracking (added 2026-08-31) — real joint-angle detection,
+          // passed the video element directly (not the downscaled canvas
+          // used for pixel-diffing; landmark accuracy benefits from more
+          // resolution, and MediaPipe resizes internally anyway).
+          res = workout.poseDetector.process(vid, performance.now());
+        } else {
+          const pc = workout.procCanvas, ctx = workout.procCtx;
+          ctx.drawImage(vid, 0, 0, pc.width, pc.height);
+          const id = ctx.getImageData(0, 0, pc.width, pc.height);
+          res = workout.detector.process(id);
+          document.getElementById('motion-bar').style.height = res.motionLevel + '%';
+        }
 
         // Update status pill
         if (res.state === 'up') {
@@ -1761,23 +1933,35 @@ function beginWorkout() {
           document.getElementById('wo-status-pill').textContent = '⬇ DOWN';
         }
 
-        // Temporary debug readout (2026-08-31) — px:moving-pixel-count vs the
-        // minimum needed to register motion at all; Y:current smoothed value;
-        // range:min-max reached so far THIS SET — the actual number that
-        // matters (a single Y: snapshot can't tell you if it's near your true
-        // top/bottom or mid-transition, but the full-set range can).
-        if (res.motionPx !== undefined) {
+        // Temporary debug readout (2026-08-31) — for motion detection:
+        // px:moving-pixel-count vs the minimum needed to register motion at
+        // all; Y:current smoothed value; range:min-max reached so far THIS
+        // SET. For pose detection: angle:current joint angle; range:min-max
+        // reached so far; visible: whether the needed landmarks are
+        // confidently tracked right now.
+        if (workout.usePose) {
+          document.getElementById('wo-debug').textContent = res.visible
+            ? `angle:${res.angle.toFixed(0)}°  range:${res.minAngle.toFixed(0)}-${res.maxAngle.toFixed(0)} (down<${res.downAngle} up>${res.upAngle})\n` +
+              `held:${res.framesHeld}/${res.minFrames} since last flip to ${res.state}`
+            : 'Body not clearly visible — reposition so your whole side is in frame';
+          document.getElementById('wo-dark-warning').style.display = 'none';
+        } else if (res.motionPx !== undefined) {
           document.getElementById('wo-debug').textContent =
             `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)}  range:${res.minY.toFixed(2)}-${res.maxY.toFixed(2)} (down>${res.downY} up<${res.upY})\n` +
             `held:${res.framesHeld}/${res.minFrames} since last flip to ${res.state}`;
+          document.getElementById('wo-dark-warning').style.display = res.tooDark ? 'block' : 'none';
         }
-        document.getElementById('wo-dark-warning').style.display = res.tooDark ? 'block' : 'none';
       } catch(e) {}
     }
     workout.animFrame = requestAnimationFrame(detect);
   };
 
   workout.detector.onRep = (count) => {
+    workout.reps = count;
+    updateWorkoutUI();
+    playRepBeep();
+  };
+  workout.poseDetector.onRep = (count) => {
     workout.reps = count;
     updateWorkoutUI();
     playRepBeep();
