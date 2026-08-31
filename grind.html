@@ -1044,6 +1044,8 @@ html, body {
           ● READY
         </div>
       </div>
+      <!-- Temporary debug readout (added 2026-08-31 to diagnose detection tuning — remove once dialed in) -->
+      <div id="wo-debug" style="text-align:center;font-size:11px;color:rgba(255,255,255,0.6);font-family:monospace;margin-top:4px;">—</div>
       <div class="wo-center">
         <div class="wo-ring-wrap">
           <svg id="wo-ring-svg" width="240" height="240" viewBox="0 0 240 240" style="transform:rotate(-90deg)">
@@ -1173,7 +1175,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_07:20';
+const BUILD_ID = '2026-08-31_21:04';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1265,11 +1267,15 @@ class MotionDetector {
     return {
       low:    { diffTh:45, minMotion:40, downY:0.62, upY:0.38, minFrames:16, alpha:0.9 },
       medium: { diffTh:28, minMotion:25, downY:0.57, upY:0.43, minFrames:12, alpha:0.87 },
-      // Loosened 2026-08-30: reported that even 'high' under-counted reps —
-      // lower diffTh/minMotion register subtler motion (useful late in a set when
-      // reps get slower/shallower from fatigue), fewer minFrames means less
-      // sustained motion needed before a state flip registers.
-      high:   { diffTh:12, minMotion:10, downY:0.53, upY:0.47, minFrames:6,  alpha:0.82 },
+      // 2026-08-30: loosened this preset (diffTh 15->12, minMotion 14->10,
+      // band 0.54/0.46->0.53/0.47, minFrames 9->6) on the theory that it was
+      // too strict. Reverted 2026-08-31: made real-world detection WORSE, not
+      // better, on an actual phone/camera — an untested guess turned out
+      // wrong. Back to the original numbers below. Don't re-loosen this blind
+      // again — use the wo-debug readout (visible during a workout: shows live
+      // motionPx vs. minMotion and smoothedY vs. downY/upY) to see what's
+      // actually happening on-device before changing any of these numbers.
+      high:   { diffTh:15, minMotion:14, downY:0.54, upY:0.46, minFrames:9,  alpha:0.84 },
     }[this.sensitivity] || this.cfg_medium;
   }
 
@@ -1323,7 +1329,13 @@ class MotionDetector {
       }
     }
 
-    return { motionLevel, state: this.state, reps: this.reps };
+    return {
+      motionLevel, state: this.state, reps: this.reps,
+      // Debug fields (added 2026-08-31) — motionPx/threshold let you tell whether
+      // the camera is registering ANY qualifying motion at all; smoothedY vs.
+      // downY/upY shows whether it's just not reaching the position thresholds.
+      motionPx, minMotion: c.minMotion, smoothedY: this.smoothedY, downY: c.downY, upY: c.upY,
+    };
   }
 
   reset() {
@@ -1698,6 +1710,14 @@ function beginWorkout() {
         } else {
           document.getElementById('wo-status-pill').className = 'pill pill-down';
           document.getElementById('wo-status-pill').textContent = '⬇ DOWN';
+        }
+
+        // Temporary debug readout (2026-08-31) — px:moving-pixel-count vs the
+        // minimum needed to register motion at all; Y:smoothed vertical
+        // motion-center vs the down/up thresholds it has to cross for a rep.
+        if (res.motionPx !== undefined) {
+          document.getElementById('wo-debug').textContent =
+            `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)} (down>${res.downY} up<${res.upY})`;
         }
       } catch(e) {}
     }
