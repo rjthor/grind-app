@@ -1049,7 +1049,7 @@ html, body {
            indication anything's wrong. See CLAUDE.md "Debug readout". -->
       <div id="wo-dark-warning" style="display:none;text-align:center;font-size:13px;font-weight:600;color:var(--danger);background:rgba(244,63,94,0.12);border-radius:8px;padding:6px 12px;margin:6px 16px 0;">⚠️ Too dark to see — reposition or add light</div>
       <!-- Temporary debug readout (added 2026-08-31 to diagnose detection tuning — remove once dialed in) -->
-      <div id="wo-debug" style="text-align:center;font-size:11px;color:rgba(255,255,255,0.6);font-family:monospace;margin-top:4px;">—</div>
+      <div id="wo-debug" style="text-align:center;font-size:11px;color:rgba(255,255,255,0.6);font-family:monospace;margin-top:4px;white-space:pre-line;">—</div>
       <div class="wo-center">
         <div class="wo-ring-wrap">
           <svg id="wo-ring-svg" width="240" height="240" viewBox="0 0 240 240" style="transform:rotate(-90deg)">
@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_22:23';
+const BUILD_ID = '2026-08-31_22:29';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1368,6 +1368,14 @@ class MotionDetector {
       // downY/upY shows whether it's just not reaching the position thresholds.
       motionPx, minMotion: c.minMotion, smoothedY: this.smoothedY, downY: c.downY, upY: c.upY,
       tooDark, minY: this.minY, maxY: this.maxY,
+      // framesHeld/minFrames (added 2026-08-31, evening) — distinguishes "truly
+      // stuck" from "just hasn't happened yet": framesHeld resets to 0 on every
+      // state change and climbs on every qualifying-motion frame since. If it's
+      // pinned near/above minFrames while state refuses to flip, smoothedY
+      // genuinely isn't crossing back — if framesHeld is low/not growing,
+      // there's just not enough registered motion right now (person paused,
+      // or motionPx is dropping below threshold) — very different problems.
+      framesHeld: this.framesHeld, minFrames: c.minFrames,
     };
   }
 
@@ -1760,7 +1768,8 @@ function beginWorkout() {
         // top/bottom or mid-transition, but the full-set range can).
         if (res.motionPx !== undefined) {
           document.getElementById('wo-debug').textContent =
-            `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)}  range:${res.minY.toFixed(2)}-${res.maxY.toFixed(2)} (down>${res.downY} up<${res.upY})`;
+            `px:${res.motionPx}/${res.minMotion}  Y:${res.smoothedY.toFixed(2)}  range:${res.minY.toFixed(2)}-${res.maxY.toFixed(2)} (down>${res.downY} up<${res.upY})\n` +
+            `held:${res.framesHeld}/${res.minFrames} since last flip to ${res.state}`;
         }
         document.getElementById('wo-dark-warning').style.display = res.tooDark ? 'block' : 'none';
       } catch(e) {}
