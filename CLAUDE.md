@@ -68,6 +68,20 @@ Real fix: scoped the flex rule to `#complete-screen.active { display: flex; }` (
 
 **Lesson for next time a screen "gets stuck visible" or "won't respond to navigation" here**: check CSS specificity conflicts between ID selectors and the `.screen`/`.active` class mechanism *before* reaching for a JS-side fix — the bug quite plausibly isn't in the JS at all.
 
+## Diagnosed 2026-08-31 — the real problem was never sensitivity, it was camera distance
+The `wo-debug` readout above proved this with real on-device data (both push-ups and squats, multiple tries):
+- **Push-ups**: `motionPx` was 1000+ (far past the ~14 threshold — motion detection was never the bottleneck), but `smoothedY` sat at 0.49, stuck in the dead zone between `down>0.54` and `up<0.46`. The camera view showed an extreme close-up of just the face. When the camera is that close, the subject fills the whole frame at every point in the rep — there's no room for the "where in frame is the motion" signal to swing distinctly toward top or bottom, regardless of sensitivity settings. No threshold combination fixes this; it's a framing problem, not a tuning problem.
+- **Squats**: `motionPx` was also 900+, but the camera view was **solid black**. Frames were still being captured and diffed (a truly frozen/dead feed would show `motionPx: 0`) — the camera was just seeing almost nothing, and near-black footage still produces plenty of frame-to-frame pixel noise that the old code couldn't distinguish from real motion. Only 1 rep registered the whole set.
+
+Both traced back to the phone being positioned too close to / too blocked by the body — and the in-app tips never said anything about distance (`pushups`/`squats` tips just said "on the floor" / "at hip height," unlike the `jumpingjacks` tip which explicitly says "Stand 1–2m from phone"). The guidance itself was incomplete for the exact failure mode that hit.
+
+Fixed:
+- `pushups`/`squats` tip text (`EXERCISES` array) now explicitly says prop the phone **1-1.5m away** so the **whole body** is in frame — not close-up.
+- Added automatic too-dark detection: `MotionDetector.process()` now also computes average frame brightness (reusing the existing per-pixel sampling pass, no extra cost) and returns `tooDark` when it's below 25/255. `detect()` in `beginWorkout()` shows a `⚠️ Too dark to see` banner live during the workout when this is true — this directly targets the squats failure mode: previously, near-total darkness silently produced garbage counts with zero indication anything was wrong.
+- No threshold-tuning was needed or attempted this round — the debug data made clear that would've been solving the wrong problem, same mistake as the 2026-08-30 attempt above.
+
+**If it's still unreliable after repositioning at proper distance with good lighting**: use the `wo-debug` readout again with a *correctly-framed* setup — if `smoothedY` still isn't swinging across `downY`/`upY` with good framing/light, that's real evidence for a genuine threshold fix (not another guess). If it's still not reliable even then, that's the actual signal to invest in real pose estimation instead of continuing to tune this heuristic.
+
 ## File layout
 - `grind.html` — the entire app (HTML/CSS/JS inline).
 - `index.html` — root-URL redirect to `grind.html` (added 2026-08-30, see Deployment above).
