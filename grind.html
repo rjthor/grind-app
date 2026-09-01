@@ -1179,7 +1179,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-08-31_22:56';
+const BUILD_ID = '2026-09-01_06:42';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1407,21 +1407,29 @@ class MotionDetector {
 ═══════════════════════════════════════════ */
 const POSE_LANDMARKS = {
   // pushups: 'angle' mode — elbow angle from [shoulder, elbow, wrist].
-  // MediaPipe Pose's standard 33-point index layout.
-  pushups: { mode: 'angle', L: [11, 13, 15], R: [12, 14, 16], downAngle: 110, upAngle: 150 },
+  // MediaPipe Pose's standard 33-point index layout. downIsHigh:false = the
+  // "down" position (bent elbow) is a LOW angle value; "up" (extended) is HIGH.
+  pushups: { mode: 'angle', L: [11, 13, 15], R: [12, 14, 16], downIsHigh: false, downThresh0: 110, upThresh0: 150 },
   // squats: 'hipY' mode — track the hip landmark's own vertical position, not
-  // a knee angle. Changed 2026-08-31 (night), same night as the angle
-  // version shipped: real-world framing only ever showed face/chest/shoulder
-  // — knees and ankles were never in frame at all, so an angle needing all
-  // three was never going to work here, no matter how it was tuned. This is
-  // also just a more direct match for "my hip goes down and back up," which
-  // is the actual visual signal for a squat — needs one landmark (hip)
-  // in frame, not three, so it should tolerate close/tight framing far
-  // better. downY/upY starting values mirror MotionDetector's old ones
-  // (0.54/0.46) since that's the only real-world reference point available;
-  // needs on-device tuning via the debug readout like everything else here.
-  squats:  { mode: 'hipY', L: [23], R: [24], downY: 0.56, upY: 0.44 },
+  // a knee angle (see git history 2026-08-31 for why: knees/ankles were never
+  // actually in frame). downIsHigh:true = "down" (squatting) is a HIGH y
+  // value (low in frame); "up" (standing) is LOW.
+  squats:  { mode: 'hipY', L: [23], R: [24], downIsHigh: true, downThresh0: 0.56, upThresh0: 0.44 },
 };
+// Adaptive thresholds (added 2026-09-01) — fixed downThresh0/upThresh0 above
+// kept landing just barely wrong for real setups: push-ups' Y once measured
+// 0.53 against a fixed down>0.54 cutoff, squats' hip Y once measured min 0.45
+// against a fixed up<0.44 cutoff — both off by ~0.01, both from a guessed
+// universal number that doesn't account for THIS camera's actual distance/
+// angle/framing. Once enough real range has been observed this set (>=
+// POSE_MIN_RANGE), thresholds recompute as a fraction of the actual observed
+// min-max instead of the fixed guess — self-calibrating to whatever this
+// specific setup's real "up" and "down" values turn out to be, rather than
+// needing another guessed universal number. downThresh0/upThresh0 above are
+// now only a bootstrap for the first few reps of a set, before enough range
+// has been seen to calibrate from.
+const POSE_MIN_RANGE = { angle: 15, hipY: 0.06 }; // per-mode: degrees vs. normalized-Y fraction, different units
+const POSE_EDGE_FRAC = 0.30; // how far into the observed range (from each extreme) counts as "reached" — smaller = stricter/deeper rep required, larger = more lenient
 const POSE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
 const POSE_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
 
@@ -1524,12 +1532,22 @@ class PoseDetector {
     this.maxValue = Math.max(this.maxValue, value);
     this.framesHeld++;
 
-    const downThresh = cfg.mode === 'angle' ? cfg.downAngle : cfg.downY;
-    const upThresh   = cfg.mode === 'angle' ? cfg.upAngle   : cfg.upY;
+    // Adaptive thresholds (see POSE_MIN_RANGE/POSE_EDGE_FRAC comment above) —
+    // once enough real range has been observed this set, calibrate off the
+    // actual min/max reached instead of the fixed bootstrap guess.
+    const range = this.maxValue - this.minValue;
+    let downThresh, upThresh;
+    if (range >= POSE_MIN_RANGE[cfg.mode]) {
+      downThresh = cfg.downIsHigh ? this.maxValue - range * POSE_EDGE_FRAC : this.minValue + range * POSE_EDGE_FRAC;
+      upThresh   = cfg.downIsHigh ? this.minValue + range * POSE_EDGE_FRAC : this.maxValue - range * POSE_EDGE_FRAC;
+    } else {
+      downThresh = cfg.downThresh0;
+      upThresh = cfg.upThresh0;
+    }
     // Direction is mode-dependent: a bent elbow is a SMALL angle ("down"),
     // but a lowered hip is a LARGE y-value ("down", since y grows downward).
-    const isDown = cfg.mode === 'angle' ? value < downThresh : value > downThresh;
-    const isUp   = cfg.mode === 'angle' ? value > upThresh   : value < upThresh;
+    const isDown = cfg.downIsHigh ? value > downThresh : value < downThresh;
+    const isUp   = cfg.downIsHigh ? value < upThresh   : value > upThresh;
 
     if (isDown && this.state !== 'down' && this.framesHeld >= this.minFrames) {
       this.state = 'down'; this.framesHeld = 0;
@@ -1972,7 +1990,7 @@ function beginWorkout() {
           const unit = res.mode === 'angle' ? '°' : '';
           const fmt = (n) => res.mode === 'angle' ? n.toFixed(0) : n.toFixed(2);
           document.getElementById('wo-debug').textContent = res.visible
-            ? `value:${fmt(res.value)}${unit}  range:${fmt(res.minValue)}-${fmt(res.maxValue)} (down${res.mode==='angle'?'<':'>'}${res.downThresh} up${res.mode==='angle'?'>':'<'}${res.upThresh})\n` +
+            ? `value:${fmt(res.value)}${unit}  range:${fmt(res.minValue)}-${fmt(res.maxValue)} (down${res.mode==='angle'?'<':'>'}${fmt(res.downThresh)} up${res.mode==='angle'?'>':'<'}${fmt(res.upThresh)})\n` +
               `held:${res.framesHeld}/${res.minFrames} since last flip to ${res.state}`
             : 'Body not clearly visible — reposition so more of you is in frame';
           document.getElementById('wo-dark-warning').style.display = 'none';
