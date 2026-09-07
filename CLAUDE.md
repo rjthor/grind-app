@@ -132,6 +132,54 @@ This should generalize better than either specific fixed-number fix could — sa
 ## Fixed 2026-08-31 — camera "doesn't switch on" for a second/third workout in the same session
 `startWorkout()` re-attaches a fresh `getUserMedia` stream to the *same* `<video id="workout-camera">` element every time (not a new element) and did `await new Promise(r => vid.onloadedmetadata = r)` with no timeout. Reusing the same video element across multiple stream attachments is a known flaky spot (seen on iOS Safari) where `loadedmetadata` doesn't reliably re-fire on a later attach — when that happened, `startWorkout()` just hung at that line forever, since nothing else was gating progress. Countdown and workout screen never proceeded — looked exactly like "camera doesn't switch on." Fixed with `Promise.race([onloadedmetadata, 2.5s timeout])` so it always proceeds either way; harmless in the normal case since the real event still wins the race immediately when it fires.
 
+## Added 2026-09-07 — spoken rep counts (Web Speech API)
+Requested so reps can be heard without looking at the screen mid-set. Pure
+`window.speechSynthesis`/`SpeechSynthesisUtterance` — no backend, no build
+step, matches everything else in this app.
+
+**Where it lives**: `speak()`/`speakRepCount()`/`speakGoalComplete()`, right
+next to `playRepBeep()`/`playGoalBeep()` (search `VOICE (added`). Wired into
+every place those beeps already fire — both `onRep` callbacks
+(`MotionDetector` and `PoseDetector`), the manual `+1 REP` button, and both
+goal-complete paths (reps-based in `updateWorkoutUI()`, plank's own timer
+path) — so voice automatically covers the manual fallback and plank too,
+not just camera-detected reps. New Settings toggle (Sound → "Voice rep
+count", mirrors the Sensitivity row exactly) persists to
+`DATA.settings.voice` (default `true`); `voiceEnabled()` treats a *missing*
+key as enabled too (`!== false`, not `=== true`) so existing users with
+saved data before this change still get it on by default.
+
+`speak()` always calls `speechSynthesis.cancel()` before speaking — reps
+announce the *latest* count, never queue a backlog if reps come faster than
+speech can finish talking (a real risk for jumping jacks specifically).
+
+**Goal-complete vs. rep-count race (found and fixed same day via real
+testing, not guessed)**: on the exact rep that also hits the goal, both the
+goal-complete announcement (fired from inside `updateWorkoutUI()`) and that
+same call's rep-count announcement (fired by the caller right after) used
+to compete — cancel-latest semantics meant the number always overwrote
+"Goal complete!" a fraction of a second after it started. `updateWorkoutUI()`
+now returns whether it just flipped `goalHit` this call; all three call
+sites (`onRep` x2, manual button) check that return value and skip
+`speakRepCount()` when true. Verified via a real headless-browser test
+(mocked `speechSynthesis.speak`/`cancel` — patching the methods on the real
+native object rather than reassigning `window.speechSynthesis` itself,
+since that property is a getter-only accessor that silently no-ops on plain
+reassignment) confirming the goal-hitting rep now speaks only "Goal
+complete!", nothing else.
+
+**Verified in this environment**: full flow end-to-end with a fake camera
+device (`--use-fake-device-for-media-stream`) through the manual `+1 REP`
+button — exercise selection → start workout → rep announced → goal
+announced once, correctly, with no JS errors. **Not verified**: real device
+audio (does it actually speak out loud, at a sane volume, with an
+acceptable voice/latency) and iOS Safari's known async-voice-loading +
+user-gesture quirks for `speechSynthesis` specifically — same "no
+camera/mic/speaker access in this environment" limitation as every other
+on-device-only item in this file. Use the app for real tomorrow and turn
+Sound → Voice rep count off in Settings if it's not wanted (e.g. workouts
+near a sleeping household).
+
 ## File layout
 - `grind.html` — the entire app (HTML/CSS/JS inline).
 - `index.html` — root-URL redirect to `grind.html` (added 2026-08-30, see Deployment above).
