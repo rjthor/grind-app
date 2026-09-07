@@ -1140,6 +1140,23 @@ html, body {
       </div>
     </div>
     <div class="settings-section">
+      <div class="settings-title">Sound</div>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label">Voice rep count</div>
+            <div class="settings-row-sub">Speaks each rep number aloud so you don't need to look at the screen</div>
+          </div>
+          <div class="settings-val">
+            <select class="sens-select" id="voice-select">
+              <option value="on" selected>On</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
       <div class="settings-title">Data</div>
       <button class="danger-btn" id="reset-data-btn">Reset All Data</button>
     </div>
@@ -1179,7 +1196,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-01_06:42';
+const BUILD_ID = '2026-09-07_21:44';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1203,7 +1220,7 @@ function loadData() {
     goals: Object.fromEntries(EXERCISES.map(e => [e.id, e.defaultGoal])),
     workouts: {},   // { "2026-08-28": { pushups: 45, squats: 0, ... } }
     streak: { current: 0, best: 0, lastDate: null },
-    settings: { sensitivity: 'high' }
+    settings: { sensitivity: 'high', voice: true }
   };
 }
 
@@ -1596,6 +1613,42 @@ function playRepBeep() {
     osc.stop(ctx.currentTime + 0.15);
   } catch(e){}
 }
+// ── VOICE (added — spoken rep counts, since you can't look at the screen
+// mid-rep). Web Speech API only — no backend, no build step, matches the
+// rest of this app. Untested on a real device as of this commit (no
+// speaker/mic access in this environment) — verified independently: the
+// SpeechSynthesisUtterance API and speechSynthesis.speak/cancel calls used
+// here are all live, standard, correct API usage; what's NOT verified is
+// real-world latency/voice availability on iOS Safari specifically (voices
+// load async there, and the very first speak() call needs to happen inside
+// a user-gesture-triggered chain — starting a workout is itself a button
+// tap, so this should be fine, but confirm on the actual phone). ──
+function voiceEnabled() {
+  return DATA.settings.voice !== false;
+}
+
+function speak(text, { rate = 1.15, pitch = 1.0, volume = 1.0 } = {}) {
+  if (!voiceEnabled()) return;
+  try {
+    if (!('speechSynthesis' in window)) return;
+    // Cancel whatever's still being spoken — always announce the LATEST
+    // count, never build a backlog if reps come faster than speech plays
+    // (a real risk for jumping jacks specifically).
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = rate; u.pitch = pitch; u.volume = volume;
+    window.speechSynthesis.speak(u);
+  } catch(e) {}
+}
+
+function speakRepCount(count) {
+  speak(String(count));
+}
+
+function speakGoalComplete() {
+  speak('Goal complete!', { rate: 1.05 });
+}
+
 function playGoalBeep() {
   try {
     const ctx = getAudioCtx(); if (!ctx) return;
@@ -2007,13 +2060,15 @@ function beginWorkout() {
 
   workout.detector.onRep = (count) => {
     workout.reps = count;
-    updateWorkoutUI();
+    const justHitGoal = updateWorkoutUI();
     playRepBeep();
+    if (!justHitGoal) speakRepCount(count);
   };
   workout.poseDetector.onRep = (count) => {
     workout.reps = count;
-    updateWorkoutUI();
+    const justHitGoal = updateWorkoutUI();
     playRepBeep();
+    if (!justHitGoal) speakRepCount(count);
   };
 
   if (workout.useCam && !workout.isPlank) {
@@ -2031,6 +2086,7 @@ function beginWorkout() {
       if (workout.elapsed >= workout.goal && !workout.goalHit) {
         workout.goalHit = true;
         playGoalBeep();
+        speakGoalComplete();
         updateWorkoutUI();
       }
       // Update ring for plank
@@ -2053,11 +2109,14 @@ function updateWorkoutUI() {
   const pct = Math.min(1, reps / workout.goal);
   document.getElementById('wo-ring-fill').style.strokeDashoffset = 653.5 * (1 - pct);
 
-  if (!workout.isPlank && reps >= workout.goal && !workout.goalHit) {
+  const justHitGoal = !workout.isPlank && reps >= workout.goal && !workout.goalHit;
+  if (justHitGoal) {
     workout.goalHit = true;
     playGoalBeep();
+    speakGoalComplete();
     document.getElementById('wo-ring-fill').style.stroke = 'var(--success)';
   }
+  return justHitGoal;
 }
 
 function pauseWorkout() {
@@ -2200,6 +2259,7 @@ function renderSettings() {
   });
 
   document.getElementById('sens-select').value = DATA.settings.sensitivity || 'high';
+  document.getElementById('voice-select').value = DATA.settings.voice === false ? 'off' : 'on';
 }
 
 /* ═══════════════════════════════════════════
@@ -2238,8 +2298,9 @@ document.getElementById('wo-manual-btn').addEventListener('click', () => {
   if (workout.isPaused) return;
   workout.reps++;
   workout.detector.reps = workout.reps;
-  updateWorkoutUI();
+  const justHitGoal = updateWorkoutUI();
   playRepBeep();
+  if (!justHitGoal) speakRepCount(workout.reps);
 });
 document.getElementById('wo-pause-btn').addEventListener('click', pauseWorkout);
 document.getElementById('wo-done-btn').addEventListener('click', () => {
@@ -2267,6 +2328,10 @@ document.getElementById('cal-next').addEventListener('click', () => {
 // Settings
 document.getElementById('sens-select').addEventListener('change', e => {
   DATA.settings.sensitivity = e.target.value;
+  saveData(DATA);
+});
+document.getElementById('voice-select').addEventListener('change', e => {
+  DATA.settings.voice = e.target.value === 'on';
   saveData(DATA);
 });
 document.getElementById('reset-data-btn').addEventListener('click', () => {
