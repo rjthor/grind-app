@@ -1157,6 +1157,26 @@ html, body {
       </div>
     </div>
     <div class="settings-section">
+      <div class="settings-title">Jarvis Sync</div>
+      <div class="settings-card">
+        <div class="settings-row" style="display:block;">
+          <div>
+            <div class="settings-row-label">Jarvis address</div>
+            <div class="settings-row-sub">Home WiFi only — e.g. https://192.168.1.90:5001. Leave blank to disable.</div>
+          </div>
+          <input type="text" id="jarvis-url-input" placeholder="https://192.168.1.90:5001"
+                 style="width:100%; margin-top:8px; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg2); color:var(--text); font-size:14px;">
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="settings-row-label" id="jarvis-sync-status">Not synced yet</div>
+            <div class="settings-row-sub">Syncs automatically after each save</div>
+          </div>
+          <button class="sens-select" id="jarvis-sync-now-btn" style="cursor:pointer;">Sync Now</button>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
       <div class="settings-title">Data</div>
       <button class="danger-btn" id="reset-data-btn">Reset All Data</button>
     </div>
@@ -1196,7 +1216,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-07_21:44';
+const BUILD_ID = '2026-09-08_22:56';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1226,6 +1246,50 @@ function loadData() {
 
 function saveData(d) {
   try { localStorage.setItem('grind_v1', JSON.stringify(d)); } catch(e) {}
+  syncToJarvis(d);
+}
+
+/* Best-effort sync to Jarvis over the home LAN. Never blocks the UI and
+   never throws — this must degrade silently to "did nothing" whenever
+   you're off home WiFi, using a wrong/stale IP, or haven't set an address
+   at all. Requires Jarvis serving HTTPS with a cert your phone trusts (see
+   jarvis-root-ca.pem / Settings > install profile) — an HTTPS page like
+   this one cannot fetch a plain-HTTP LAN address (mixed content), so plain
+   http:// addresses here will always silently fail too. */
+let _jarvisSyncTimer = null;
+function getJarvisUrl() {
+  try { return (localStorage.getItem('jarvis_url') || '').trim().replace(/\/$/, ''); } catch(e) { return ''; }
+}
+function setJarvisUrl(url) {
+  try { localStorage.setItem('jarvis_url', url.trim()); } catch(e) {}
+}
+function syncToJarvis(d) {
+  clearTimeout(_jarvisSyncTimer);
+  _jarvisSyncTimer = setTimeout(() => syncToJarvisNow(d), 800); // debounce rapid saves
+}
+async function syncToJarvisNow(d) {
+  const url = getJarvisUrl();
+  const statusEl = document.getElementById('jarvis-sync-status');
+  if (!url) { if (statusEl) statusEl.textContent = 'Not synced yet'; return; }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch(`${url}/api/grind/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(d),
+      signal: controller.signal,
+    });
+    if (res.ok && statusEl) {
+      statusEl.textContent = `Synced ${new Date().toLocaleTimeString()}`;
+    } else if (statusEl) {
+      statusEl.textContent = 'Sync failed (Jarvis reachable but rejected data)';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Not reachable (check home WiFi / address)';
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function todayStr() {
@@ -2260,6 +2324,7 @@ function renderSettings() {
 
   document.getElementById('sens-select').value = DATA.settings.sensitivity || 'high';
   document.getElementById('voice-select').value = DATA.settings.voice === false ? 'off' : 'on';
+  document.getElementById('jarvis-url-input').value = getJarvisUrl();
 }
 
 /* ═══════════════════════════════════════════
@@ -2333,6 +2398,13 @@ document.getElementById('sens-select').addEventListener('change', e => {
 document.getElementById('voice-select').addEventListener('change', e => {
   DATA.settings.voice = e.target.value === 'on';
   saveData(DATA);
+});
+document.getElementById('jarvis-url-input').addEventListener('change', e => {
+  setJarvisUrl(e.target.value);
+});
+document.getElementById('jarvis-sync-now-btn').addEventListener('click', () => {
+  setJarvisUrl(document.getElementById('jarvis-url-input').value);
+  syncToJarvisNow(DATA);
 });
 document.getElementById('reset-data-btn').addEventListener('click', () => {
   if (confirm('Reset all workout data? This cannot be undone.')) {
