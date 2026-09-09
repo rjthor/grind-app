@@ -180,6 +180,89 @@ on-device-only item in this file. Use the app for real tomorrow and turn
 Sound → Voice rep count off in Settings if it's not wanted (e.g. workouts
 near a sleeping household).
 
+## Fixed 2026-09-09 — voice never actually spoke on real device (iOS Safari gesture lock)
+Confirmed on real device: Rambo heard nothing during real workouts ("no one
+egging me on for rep counts"). Root cause, not guessed — this is a
+well-documented iOS Safari policy: `speechSynthesis.speak()` only produces
+audio if it's been called **synchronously inside a user-gesture handler** at
+least once for the page; calls from async contexts before that "unlock" are
+silently swallowed, no error thrown. `startWorkout()` is `async` and
+`await`s `getUserMedia()` before a workout even begins — every real
+`speak()` call (from a rep detected by the camera/pose loop) happens several
+`await`s removed from the tap that started it, exactly the case iOS blocks.
+This is why the 2026-09-07 "verified in this environment" Playwright test
+above didn't catch it: Chromium doesn't enforce this gesture-lock policy at
+all, so the mocked test passed while real iOS Safari stayed silent.
+
+Fix: `primeSpeechSynthesis()` — a silent (`volume: 0`, empty-text) utterance
+fired from a page-wide, `{once: true, capture: true}` `pointerdown` listener,
+so it fires on literally the first tap anywhere on the page regardless of
+which button, before any `await` has a chance to run. One priming call is
+enough to unlock the rest of the page's session.
+
+**Verified in this environment**: the priming call fires correctly and
+synchronously on the first tap (checked via a patched `speechSynthesis.speak`
+that logs calls — same real-object-patching approach as the goal-complete
+race test above). **Not verified**: whether this actually produces audible
+speech on the real phone now — I have no way to reproduce iOS's specific
+gesture-lock enforcement in this environment (Chromium doesn't have it),
+so this needs a real on-device retest, not just re-trusting the same kind
+of test that missed it the first time.
+
+## Fixed 2026-09-09 — camera feed rendered black despite working stream
+Real device: camera permission granted, pose detection running (confirmed by
+the dynamic "Body not clearly visible" debug text, which only renders when
+`vid.readyState >= 2` — i.e. the video element genuinely had usable decoded
+frame data), but the on-screen `<video>` stayed solid black. Not a
+permissions or stream problem — a known Safari/WebKit compositing bug where
+a `<video>` with `transform: scaleX(-1)` (used here for the selfie mirror)
+can decode frames correctly while failing to paint them on screen. Fixed by
+forcing GPU-layer promotion (`translateZ(0)` + `backface-visibility: hidden`,
+webkit-prefixed too) alongside the existing mirror transform on
+`#workout-camera`. **Not independently verified** beyond the reasoning above
+— no real iOS device access in this environment; Rambo confirmed camera
++ voice both working after this build, but hasn't isolated which specific
+change fixed it (this CSS fix, or something incidental).
+
+## Added 2026-09-09 — Jarvis's real voice (Kokoro) for rep counts
+Rambo wanted the same voice Jarvis uses, not the browser's generic built-in
+`speechSynthesis` voice. Jarvis runs a real neural TTS model (Kokoro,
+`af_heart`) on the Mac — Grind can't bundle that itself (no backend, no
+build step), so this reaches out to Jarvis over the same home-WiFi HTTPS
+bridge built for data sync, via a NEW endpoint: `POST /api/tts` on the Jarvis
+side (`app.py`), which returns raw WAV bytes for the caller to play locally.
+This is deliberately separate from Jarvis's existing `/api/speak` — that one
+plays audio through the **Mac's own speakers** via `afplay`, which is right
+for Jarvis-the-assistant but wrong here (you're on your phone, not next to
+the Mac).
+
+**Design — cache-first, never-blocking** (see `speak()`/`fetchJarvisVoice()`/
+`playJarvisAudio()`, next to the existing voice code): a phrase already
+fetched this page load plays instantly via Jarvis's real voice from an
+in-memory cache (`_jarvisAudioCache`, keyed by exact text). An uncached
+phrase plays via the browser voice immediately — live rep-counting must
+never stall waiting on a network round-trip — while a background fetch to
+`${jarvisUrl}/api/tts` quietly populates the cache for next time. Net effect:
+first time you hear "6" in a session, generic voice; every time after,
+Jarvis's real voice. Uses the same `jarvis_url` Settings field as data sync —
+one address configures both.
+
+**Known limitation**: cache is in-memory only, resets every page load — every
+fresh session re-pays the "first occurrence is generic voice" cost per
+number. Worth an IndexedDB-backed cache later if that turns out to matter in
+practice; not built yet since it's meaningfully more complexity for an
+untested payoff.
+
+**Verified in this environment**: real end-to-end test against the actual
+running Jarvis server (not mocked) — confirmed `/api/tts` returns real
+Kokoro-synthesized WAV audio (played it locally via `afplay` to confirm it's
+real speech, not silence/garbage), and confirmed via a real Playwright test
+that first `speak("7")` uses the browser voice + populates the cache, and a
+second `speak("7")` uses ONLY the cached Jarvis audio (zero browser-voice
+calls). **Not verified**: real-device audio quality/latency over an actual
+home WiFi connection during a live workout — the test above ran browser
+against localhost, not phone against the Mac's LAN IP.
+
 ## File layout
 - `grind.html` — the entire app (HTML/CSS/JS inline).
 - `index.html` — root-URL redirect to `grind.html` (added 2026-08-30, see Deployment above).
