@@ -1219,7 +1219,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-09_05:58';
+const BUILD_ID = '2026-09-09_06:05';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1715,8 +1715,7 @@ function primeSpeechSynthesis() {
 }
 document.addEventListener('pointerdown', primeSpeechSynthesis, { once: true, capture: true });
 
-function speak(text, { rate = 1.15, pitch = 1.0, volume = 1.0 } = {}) {
-  if (!voiceEnabled()) return;
+function speakBrowser(text, { rate = 1.15, pitch = 1.0, volume = 1.0 } = {}) {
   try {
     if (!('speechSynthesis' in window)) return;
     // Cancel whatever's still being spoken — always announce the LATEST
@@ -1727,6 +1726,71 @@ function speak(text, { rate = 1.15, pitch = 1.0, volume = 1.0 } = {}) {
     u.rate = rate; u.pitch = pitch; u.volume = volume;
     window.speechSynthesis.speak(u);
   } catch(e) {}
+}
+
+/* Jarvis's own Kokoro voice, added 2026-09-09 — Rambo wanted the same voice
+   Jarvis uses, not the browser's generic built-in TTS. Only reachable over
+   home WiFi (same constraint as the data sync), so this is deliberately a
+   CACHE-FIRST, NEVER-BLOCKING layer on top of the browser voice, not a
+   replacement for it:
+     - A cached phrase (already fetched once this page load) plays instantly
+       via Jarvis's real voice.
+     - An uncached phrase plays via the browser voice immediately (so live
+       rep-counting never lags waiting on a network round-trip), while a
+       fetch to Jarvis quietly populates the cache in the background for
+       next time that same phrase is needed.
+   Net effect: the first time you hear "6" in a session it's the generic
+   voice; every time after that (this session, or once carried over — see
+   below) it's Jarvis's real voice. Cache is in-memory only, so it resets
+   each page load — a real limitation (worth an IndexedDB-backed cache later
+   if the network round-trip cost per session turns out to matter). */
+const _jarvisAudioCache = new Map(); // text -> {url, audio} | Promise
+let _currentJarvisAudio = null;
+
+function speak(text, opts = {}) {
+  if (!voiceEnabled()) return;
+  if (_currentJarvisAudio) { try { _currentJarvisAudio.pause(); } catch(e) {} _currentJarvisAudio = null; }
+
+  const jarvisUrl = getJarvisUrl();
+  if (!jarvisUrl) { speakBrowser(text, opts); return; }
+
+  const cached = _jarvisAudioCache.get(text);
+  if (cached && cached.url) {
+    playJarvisAudio(cached.url);
+  } else {
+    speakBrowser(text, opts); // don't make live rep-counting wait on a network round-trip
+    if (!cached) fetchJarvisVoice(text, jarvisUrl); // populate cache in the background for next time
+  }
+}
+
+function playJarvisAudio(url) {
+  try {
+    const audio = new Audio(url);
+    _currentJarvisAudio = audio;
+    audio.play().catch(() => {}); // autoplay can reject silently on some browsers; browser voice already covered this utterance
+  } catch(e) {}
+}
+
+async function fetchJarvisVoice(text, jarvisUrl) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${jarvisUrl}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    _jarvisAudioCache.set(text, { url });
+  } catch(e) {
+    // off home WiFi, Jarvis down, or timed out — browser voice already
+    // covered this utterance, nothing more to do
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function speakRepCount(count) {
