@@ -1216,7 +1216,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-08_22:56';
+const BUILD_ID = '2026-09-09_05:40';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1690,6 +1690,27 @@ function playRepBeep() {
 function voiceEnabled() {
   return DATA.settings.voice !== false;
 }
+
+// iOS Safari only allows speechSynthesis to produce audio if speak() has been
+// called SYNCHRONOUSLY inside a user-gesture handler at least once per page
+// load — later calls from async contexts (a camera/pose-detection loop, in
+// our case) are silently swallowed otherwise, no error thrown. startWorkout()
+// is async and awaits getUserMedia() before any rep is ever detected, so by
+// the time speak() would fire for a real rep count, we're multiple awaits
+// removed from the tap that started the workout — exactly the case iOS
+// blocks. Fix: prime speechSynthesis with a silent utterance on the very
+// first tap anywhere on the page, before any await has a chance to run.
+let _speechPrimed = false;
+function primeSpeechSynthesis() {
+  if (_speechPrimed || !('speechSynthesis' in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance('');
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch(e) {}
+  _speechPrimed = true; // only needs to happen once per page load, even if it throws
+}
+document.addEventListener('pointerdown', primeSpeechSynthesis, { once: true, capture: true });
 
 function speak(text, { rate = 1.15, pitch = 1.0, volume = 1.0 } = {}) {
   if (!voiceEnabled()) return;
