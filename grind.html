@@ -497,7 +497,10 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1); /* mirror for selfie */
+  transform: scaleX(-1) translateZ(0); /* mirror for selfie */
+  -webkit-transform: scaleX(-1) translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 #workout-canvas {
   position: absolute;
@@ -1216,7 +1219,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-09_05:40';
+const BUILD_ID = '2026-09-09_05:58';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
