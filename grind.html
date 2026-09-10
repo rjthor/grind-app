@@ -1219,7 +1219,7 @@ html, body {
 
 // Bumped by publish.sh on every push — lets you confirm on your phone that a
 // deploy actually landed (GitHub Pages + PWA home-screen caching can lag).
-const BUILD_ID = '2026-09-09_06:05';
+const BUILD_ID = '2026-09-10_13:09';
 
 /* ═══════════════════════════════════════════
    DATA LAYER
@@ -1801,6 +1801,34 @@ function speakGoalComplete() {
   speak('Goal complete!', { rate: 1.05 });
 }
 
+// Encouragement (added 2026-09-10 — Rambo: "no encouragement words while
+// doing the workout", correctly pointing out voice only ever spoke rep
+// numbers, never actual motivation). Fires at 25/50/75% of the goal, once
+// each per set (workout.encouragedMilestones, reset in startWorkout()) —
+// deliberately not on every rep, that would be exhausting to listen to.
+// Replaces that rep's number announcement the same way a goal-complete
+// announcement does, so they never compete for the same "cancel latest"
+// speech slot.
+const ENCOURAGEMENT_PHRASES = {
+  25: ['Good start, keep going!', "You're building momentum!", 'Nice pace, keep it up!'],
+  50: ['Halfway there!', "You're doing great, keep pushing!", 'Great pace, stay with it!'],
+  75: ['Almost there, push through!', "You've got this, nearly done!", 'Strong work, finish it out!'],
+};
+
+function maybeSpeakEncouragement(reps, goal) {
+  if (goal <= 0) return false;
+  const pct = reps / goal;
+  for (const milestone of [25, 50, 75]) {
+    if (pct >= milestone / 100 && !workout.encouragedMilestones.has(milestone)) {
+      workout.encouragedMilestones.add(milestone);
+      const phrases = ENCOURAGEMENT_PHRASES[milestone];
+      speak(phrases[Math.floor(Math.random() * phrases.length)]);
+      return true;
+    }
+  }
+  return false;
+}
+
 function playGoalBeep() {
   try {
     const ctx = getAudioCtx(); if (!ctx) return;
@@ -2024,6 +2052,7 @@ async function startWorkout(useCam) {
   workout.elapsed = 0;
   workout.isPaused = false;
   workout.goalHit = false;
+  workout.encouragedMilestones = new Set();
   workout.useCam = useCam;
   workout.stream = null;
   workout.detector.reset();
@@ -2262,13 +2291,21 @@ function updateWorkoutUI() {
   document.getElementById('wo-ring-fill').style.strokeDashoffset = 653.5 * (1 - pct);
 
   const justHitGoal = !workout.isPlank && reps >= workout.goal && !workout.goalHit;
+  let spokeEncouragement = false;
   if (justHitGoal) {
     workout.goalHit = true;
     playGoalBeep();
     speakGoalComplete();
     document.getElementById('wo-ring-fill').style.stroke = 'var(--success)';
+  } else {
+    // Only try encouragement when the goal wasn't just hit — goal-complete
+    // always wins, same "one announcement per update" rule as rep-count.
+    // Same race the goal-complete/rep-count bug had: speak() cancels
+    // whatever's playing, so the caller's speakRepCount() would immediately
+    // cut off this encouragement if not suppressed the same way.
+    spokeEncouragement = maybeSpeakEncouragement(reps, workout.goal);
   }
-  return justHitGoal;
+  return justHitGoal || spokeEncouragement;
 }
 
 function pauseWorkout() {
